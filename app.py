@@ -89,7 +89,7 @@ dcomp = st.sidebar.date_input("Data", value=default_d,
 desc  = st.sidebar.text_input("Descrição")
 cat   = st.sidebar.selectbox("Categoria",
          ["Alimentação","Transporte","Lazer",
-          "Fixos","Educação","Outros"])
+          "Fixos","Educação","Comprinhas","Presente","Saúde","Outros"])
 fonte = st.sidebar.selectbox("Fonte",
          ["Dinheiro","Crédito","Débito","PIX",
           "Vale Refeição","Vale Alimentação"])
