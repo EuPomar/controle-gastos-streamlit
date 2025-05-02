@@ -4,3 +4,4 @@ gastos.db
 .streamlit/secrets.toml
 .venv/
 gastos.db
+.gitmore
