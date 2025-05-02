@@ -1,0 +1,6 @@
+streamlit
+pandas
+sqlalchemy
+altair
+streamlit-authenticator
+streamlit>=1.42
