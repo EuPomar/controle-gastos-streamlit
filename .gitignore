@@ -1,3 +1,6 @@
 .venv/
 gastos.db
 .streamlit/secrets.toml
+.streamlit/secrets.toml
+.venv/
+gastos.db
