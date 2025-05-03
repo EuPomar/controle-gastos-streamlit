@@ -1,58 +1,76 @@
-import streamlit as st
+import json, os, io, streamlit as st
 from datetime import date
 from calendar import monthrange
 import pandas as pd
 import altair as alt
-from sqlalchemy import create_engine, text
+import gspread
+from gspread_dataframe import get_as_dataframe, set_with_dataframe
+from google.oauth2.service_account import Credentials
 
-# ────── utilidades ───────────────────────────────────────────────
+# ─────────── helpers Google Sheets ──────────────────────────────
+def _get_client():
+    info = json.loads(st.secrets["gspread"]["service_account_json"])
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
+    return gspread.authorize(creds)
+
+def _get_ws(sheet_name: str):
+    gc = _get_client()
+    sh = gc.open_by_key(st.secrets["gspread"]["sheet_id"])
+    try:
+        return sh.worksheet(sheet_name)
+    except gspread.WorksheetNotFound:
+        return sh.add_worksheet(sheet_name, rows=1000, cols=20)
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_df(sheet_name: str) -> pd.DataFrame:
+    ws = _get_ws(sheet_name)
+    df = get_as_dataframe(ws, evaluate_formulas=True, na_filter=False)
+    df = df.dropna(how="all")        # remove linhas vazias
+    if "id" in df.columns and df["id"].dtype != int:
+        df["id"] = df["id"].astype(int)
+    return df
+
+def save_df(df: pd.DataFrame, sheet_name: str):
+    ws = _get_ws(sheet_name)
+    ws.clear()
+    set_with_dataframe(ws, df, include_index=False)
+
+# ─────────── funções utilitárias ────────────────────────────────
 def add_months(d: date, n: int) -> date:
     y, m = divmod(d.month - 1 + n, 12); y += d.year; m += 1
     return date(y, m, min(d.day, monthrange(y, m)[1]))
 
 def brl(v: float) -> str:
-    """Formata valor em pt‑BR: 1200.5 → 'R$ 1.200,50'."""
     return "R$ " + f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-def rerun():
-    (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
+def rerun(): (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
 
-# ────── configuração da página (icone & título) ─────────────────
+# ─────────── configuração da página ─────────────────────────────
 st.set_page_config(
     page_title="Controle de Gastos",
-    page_icon="icone.png",            # fav‑icon do navegador
+    page_icon="icone.png",
     layout="wide"
 )
 
-# ────── LOGIN COM GOOGLE ─────────────────────────────────────────
+# ─────────── LOGIN GOOGLE (Streamlit ≥1.42) ─────────────────────
 if not st.user.is_logged_in:
     st.title("Controle de Gastos")
-    st.write("Entre para acessar seus dados.")
     st.button("Entrar com Google ➜", on_click=st.login)
     st.stop()
-else:
-    st.button("Logout", on_click=st.logout, key="logout")
-    user_email = st.user.email           # chave para o banco
+user_email = st.user.email
+st.button("Logout", on_click=st.logout, key="logout")
 
-# ────── logo na sidebar ─────────────────────────────────────────
+# ─────────── logo na sidebar ────────────────────────────────────
 with st.sidebar:
     st.image("icone.png", width=120)
     st.markdown("---")
 
-# ────── banco SQLite ─────────────────────────────────────────────
-eng = create_engine("sqlite:///gastos.db",
-                    connect_args={"check_same_thread": False})
-with eng.begin() as c:
-    c.exec_driver_sql("""CREATE TABLE IF NOT EXISTS gastos(
-        id INTEGER PRIMARY KEY,
-        username TEXT, data TEXT,
-        valor REAL, descricao TEXT, categoria TEXT, fonte TEXT)""")
-    c.exec_driver_sql("""CREATE TABLE IF NOT EXISTS orcamento(
-        id INTEGER PRIMARY KEY, username TEXT,
-        mes INTEGER, ano INTEGER, valor_planejado REAL,
-        UNIQUE(username,mes,ano))""")
+# ─────────── carrega DataFrames ─────────────────────────────────
+gastos_df    = load_df("gastos")
+orcamento_df = load_df("orcamento")
 
-# ────── seleção mês/ano ─────────────────────────────────────────
+# ─────────── seleção mês / ano ──────────────────────────────────
 meses = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho",
          "Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"]
 mes = st.sidebar.selectbox("Mês", range(1,13),
@@ -61,30 +79,37 @@ mes = st.sidebar.selectbox("Mês", range(1,13),
 ano = st.sidebar.number_input("Ano", value=date.today().year,
                               step=1, format="%d")
 
-# ────── orçamento ───────────────────────────────────────────────
-with eng.begin() as c:
-    row = c.execute(text("SELECT valor_planejado FROM orcamento "
-                         "WHERE username=:u AND mes=:m AND ano=:a"),
-                    dict(u=user_email,m=mes,a=ano)).fetchone()
-orc = row[0] if row else None
-st.sidebar.markdown(f"🎯 **Orçamento:** {brl(orc) if orc else '—'}")
+# ─────────── orçamento (planilha orcamento) ─────────────────────
+linha_orc = orcamento_df[
+    (orcamento_df["username"] == user_email) &
+    (orcamento_df["mes"] == mes) &
+    (orcamento_df["ano"] == ano)
+]
+orc_val = float(linha_orc["valor_planejado"].iloc[0]) if not linha_orc.empty else None
+st.sidebar.markdown(f"🎯 **Orçamento:** {brl(orc_val) if orc_val else '—'}")
+
 novo_orc = st.sidebar.number_input("Definir/alterar orçamento",
-                                   value=orc or 0.0, step=0.01,
+                                   value=orc_val or 0.0, step=0.01,
                                    format="%.2f")
 if st.sidebar.button("Salvar orçamento"):
-    with eng.begin() as c:
-        c.execute(text("INSERT OR REPLACE INTO orcamento "
-                       "(username,mes,ano,valor_planejado)"
-                       "VALUES(:u,:m,:a,:v)"),
-                  dict(u=user_email,m=mes,a=ano,v=novo_orc))
-    st.sidebar.success("Orçamento salvo!"); rerun()
+    if linha_orc.empty:
+        orcamento_df = pd.concat([orcamento_df, pd.DataFrame([{
+            "username": user_email, "mes": mes, "ano": ano,
+            "valor_planejado": novo_orc
+        }])], ignore_index=True)
+    else:
+        idx = linha_orc.index[0]
+        orcamento_df.at[idx, "valor_planejado"] = novo_orc
+    save_df(orcamento_df, "orcamento")
+    st.sidebar.success("Orçamento salvo!")
+    rerun()
 
-if orc is None:
+if orc_val is None:
     st.warning("Defina o orçamento antes de continuar."); st.stop()
 
 st.sidebar.divider()
 
-# ────── formulário novo gasto ───────────────────────────────────
+# ─────────── formulário novo gasto ──────────────────────────────
 st.sidebar.header("Novo gasto")
 first_day = date(ano, mes, 1)
 last_day  = date(ano, mes, monthrange(ano, mes)[1])
@@ -107,51 +132,61 @@ fonte = st.sidebar.selectbox("Fonte",
 parc = st.sidebar.checkbox("Compra parcelada?")
 if parc:
     nparc = st.sidebar.number_input("Qtd. parcelas", 1, step=1, value=2)
-    modo  = st.sidebar.radio("Informar:",
-                             ["Valor total", "Valor por parcela"],
+    modo  = st.sidebar.radio("Informar:",["Valor total","Valor por parcela"],
                              horizontal=True)
-    if modo == "Valor total":
-        vtot  = st.sidebar.number_input("Valor total (R$)", 0.0,
-                                        step=0.01, format="%.2f")
-        vparc = vtot / nparc if nparc else 0.0
+    if modo=="Valor total":
+        vtot  = st.sidebar.number_input("Valor total (R$)",0.0,step=0.01,
+                                        format="%.2f")
+        vparc = vtot/nparc if nparc else 0.0
     else:
-        vparc = st.sidebar.number_input("Valor por parcela (R$)", 0.0,
-                                        step=0.01, format="%.2f")
-        vtot  = vparc * nparc
-    total_txt   = brl(vtot).replace("$", "\\$")
-    parcela_txt = brl(vparc).replace("$", "\\$")
-    st.sidebar.markdown(f"Total: {total_txt} → Parcela: {parcela_txt}")
+        vparc = st.sidebar.number_input("Valor por parcela (R$)",
+                                        0.0,step=0.01,format="%.2f")
+        vtot  = vparc*nparc
+    st.sidebar.markdown(f"Total: {brl(vtot)} → Parcela: {brl(vparc)}")
 else:
-    v = st.sidebar.number_input("Valor (R$)", 0.0, step=0.01, format="%.2f")
+    v = st.sidebar.number_input("Valor (R$)",0.0,step=0.01,format="%.2f")
 
 if st.sidebar.button("Registrar 💾"):
-    with eng.begin() as c:
-        if parc:
-            for i in range(int(nparc)):
-                d = add_months(dcomp, i)
-                c.execute(text("INSERT INTO gastos "
-                               "(username,data,valor,descricao,categoria,fonte)"
-                               "VALUES(:u,:d,:v,:de,:ca,:fo)"),
-                          dict(u=user_email,d=d.isoformat(),v=vparc,
-                               de=f"{desc} (parc.{i+1}/{int(nparc)})",
-                               ca=cat,fo=fonte))
-        else:
-            c.execute(text("INSERT INTO gastos "
-                           "(username,data,valor,descricao,categoria,fonte)"
-                           "VALUES(:u,:d,:v,:de,:ca,:fo)"),
-                      dict(u=user_email,d=dcomp.isoformat(),v=v,
-                           de=desc,ca=cat,fo=fonte))
-    st.sidebar.success("Gasto salvo!"); rerun()
+    next_id = 1 if gastos_df.empty else gastos_df["id"].max() + 1
+    novas_linhas = []
+    if parc:
+        for i in range(int(nparc)):
+            d = add_months(dcomp, i)
+            novas_linhas.append({
+                "id": next_id+i,
+                "username": user_email,
+                "data": d.isoformat(),
+                "valor": vparc,
+                "descricao": f"{desc} (parc.{i+1}/{int(nparc)})",
+                "categoria": cat, "fonte": fonte
+            })
+    else:
+        novas_linhas.append({
+            "id": next_id,
+            "username": user_email,
+            "data": dcomp.isoformat(),
+            "valor": v,
+            "descricao": desc,
+            "categoria": cat,
+            "fonte": fonte
+        })
+    gastos_df = pd.concat([gastos_df, pd.DataFrame(novas_linhas)],
+                          ignore_index=True)
+    save_df(gastos_df, "gastos")
+    st.sidebar.success("Gasto salvo!")
+    rerun()
 
-# ────── dados filtrados ─────────────────────────────────────────
-df = pd.read_sql(text("SELECT * FROM gastos WHERE username=:u"),
-                 eng, params=dict(u=user_email), parse_dates=["data"])
-mes_df = df[(df.data.dt.month==mes)&(df.data.dt.year==ano)]
+# ─────────── filtra mês/ano ─────────────────────────────────────
+df_user = gastos_df[gastos_df["username"] == user_email].copy()
+df_user["data"] = pd.to_datetime(df_user["data"])
+mes_df = df_user[(df_user["data"].dt.month==mes)&(df_user["data"].dt.year==ano)]
 
-gasto = mes_df.valor.sum(); saldo = orc-gasto
+gasto_total = mes_df["valor"].sum()
+saldo = orc_val - gasto_total
+
 a,b,c = st.columns(3)
-a.metric("💸 Gasto", brl(gasto))
-b.metric("🎯 Orçamento", brl(orc))
+a.metric("💸 Gasto", brl(gasto_total))
+b.metric("🎯 Orçamento", brl(orc_val))
 c.metric("📈 Saldo", brl(saldo),
          delta=brl(saldo),
          delta_color="normal" if saldo>=0 else "inverse")
@@ -161,7 +196,7 @@ st.title(f"Gastos de {meses[mes-1]}/{ano}")
 if mes_df.empty:
     st.info("Nenhum gasto registrado."); st.stop()
 
-# ────── gráficos ────────────────────────────────────────────────
+# ─────────── gráficos ───────────────────────────────────────────
 cor_cat = {"Alimentação":"#1f77b4","Transporte":"#ff7f0e",
            "Lazer":"#2ca02c","Fixos":"#d62728",
            "Educação":"#9467bd","Outros":"#8c564b"}
@@ -188,7 +223,7 @@ fonte_chart = donut(
     mes_df.groupby("fonte")["valor"].sum().reset_index(),
     "fonte", "Por fonte", cor_ft, "Fonte"
 )
-saldo_vals = {"Gasto": gasto, "Disponível": max(saldo, 0)}
+saldo_vals = {"Gasto": gasto_total, "Disponível": max(saldo, 0)}
 saldo_present = [k for k,v in saldo_vals.items() if v>0]
 saldo_chart = (alt.Chart(pd.DataFrame({
         "Status": saldo_present,
@@ -210,31 +245,29 @@ g3.altair_chart(saldo_chart, use_container_width=True)
 
 st.subheader("📜 Registros detalhados")
 
-# ────── exclusão inline ─────────────────────────────────────────
+# ─────────── exclusão inline ────────────────────────────────────
 if "del_id" not in st.session_state:
-    st.session_state.del_id = None
+    st.session_state.del_id=None
 
 for _, r in mes_df.sort_values("data", ascending=False).iterrows():
     cols = st.columns([1.5,3,2,1.4,1.4,0.6])
-    cols[0].write(r.data.strftime("%d/%m/%Y"))
-    cols[1].write(r.descricao)
-    cols[2].write(r.categoria)
-    cols[3].write(r.fonte)
-    cols[4].write(brl(r.valor))
-    if cols[5].button("🗑️", key=f"del{r.id}"):
-        st.session_state.del_id = int(r.id)
+    cols[0].write(r["data"].strftime("%d/%m/%Y"))
+    cols[1].write(r["descricao"])
+    cols[2].write(r["categoria"])
+    cols[3].write(r["fonte"])
+    cols[4].write(brl(r["valor"]))
+    if cols[5].button("🗑️", key=f"del{r['id']}"):
+        st.session_state.del_id=int(r["id"])
 
-    if st.session_state.del_id == r.id:
-        st.warning(f"Apagar **{r.descricao}** "
-                   f"({r.data.strftime('%d/%m/%Y')}, {brl(r.valor)})?")
-        c1, c2 = st.columns(2)
-        if c1.button("✅ Confirmar", key=f"ok{r.id}"):
-            with eng.begin() as c:
-                c.execute(text("DELETE FROM gastos "
-                               "WHERE id=:i AND username=:u"),
-                          dict(i=r.id, u=user_email))
-            st.session_state.del_id = None
+    if st.session_state.del_id == r["id"]:
+        st.warning(f"Apagar **{r['descricao']}** "
+                   f"({r['data'].strftime('%d/%m/%Y')}, {brl(r['valor'])})?")
+        c1,c2 = st.columns(2)
+        if c1.button("✅ Confirmar", key=f"ok{r['id']}"):
+            gastos_df = gastos_df[gastos_df["id"] != r["id"]]
+            save_df(gastos_df, "gastos")
+            st.session_state.del_id=None
             rerun()
-        if c2.button("❌ Cancelar", key=f"no{r.id}"):
-            st.session_state.del_id = None
+        if c2.button("❌ Cancelar", key=f"no{r['id']}"):
+            st.session_state.del_id=None
             rerun()
