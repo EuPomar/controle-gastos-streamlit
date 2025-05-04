@@ -6,7 +6,7 @@ import altair as alt
 from sqlalchemy import create_engine, text
 import sqlalchemy.exc
 
-# ---------------- Database (Neon PostgreSQL) -------------------
+# ─── Database setup ────────────────────────────────────────────────
 eng = create_engine(
     st.secrets["db"]["url"],
     pool_pre_ping=True
@@ -34,212 +34,178 @@ CREATE TABLE IF NOT EXISTS orcamento (
 with eng.begin() as conn:
     for stmt in DDL.split(";"):
         stmt = stmt.strip()
-        if not stmt:
-            continue
+        if not stmt: continue
         try:
             conn.exec_driver_sql(stmt)
         except sqlalchemy.exc.IntegrityError as e:
-            msg = str(e).lower()
-            if "already exists" in msg or "duplicate key value" in msg:
+            if "already exists" in str(e).lower():
                 pass
             else:
                 raise
 
-# ------------------- Utils -------------------
+# ─── Utils ─────────────────────────────────────────────────────────
 def add_months(d, n):
-    y, m = divmod(d.month - 1 + n, 12); y += d.year; m += 1
+    y, m = divmod(d.month - 1 + n, 12)
+    y += d.year; m += 1
     return date(y, m, min(d.day, monthrange(y, m)[1]))
 
 def brl(v):
-    return "R$ " + f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return "R$ " + f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def rerun():
-    (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
+    (st.rerun if hasattr(st, 'rerun') else st.experimental_rerun)()
 
-# ------------------- Page config -------------------
+# ─── Page config ──────────────────────────────────────────────────
 st.set_page_config(page_title="Controle de Gastos", page_icon="icone.png", layout="wide")
 
-# ------------------- Login -------------------
+# ─── Auth ──────────────────────────────────────────────────────────
 if not st.user.is_logged_in:
     st.title("Controle de Gastos")
     st.button("Entrar com Google ➜", on_click=st.login)
     st.stop()
-user_email = st.user.email
-st.button("Logout", on_click=st.logout, key="logout")
+user = st.user.email
+st.button("Logout", on_click=st.logout)
 
-# ------------------- Sidebar -------------------
+# ─── Sidebar ───────────────────────────────────────────────────────
 with st.sidebar:
     st.image("icone.png", width=120)
     st.markdown("---")
 
-# ------------------- Data helpers -------------------
-@st.cache_data(ttl=60, show_spinner=False)
-def load_table(tbl):
-    return pd.read_sql(text(f"SELECT * FROM {tbl}"), eng)
+# ─── Data helpers ──────────────────────────────────────────────────
+@st.cache_data(ttl=60)
+def load_table(name):
+    return pd.read_sql(text(f"SELECT * FROM {name}"), eng)
 
-def save_gasto(row):
-    cols = ", ".join(row.keys())
-    vals = ", ".join([f":{k}" for k in row.keys()])
+def insert_gasto(data):
+    cols = ", ".join(data.keys())
+    vals = ", ".join([f":{k}" for k in data.keys()])
     with eng.begin() as c:
-        c.execute(text(f"INSERT INTO gastos ({cols}) VALUES ({vals})"), row)
+        c.execute(text(f"INSERT INTO gastos ({cols}) VALUES ({vals})"), data)
 
-def upsert_orc(u, m, a, v):
+def upsert_orc(u,m,a,v):
     with eng.begin() as c:
         c.execute(text(
             "INSERT INTO orcamento (username,mes,ano,valor_planejado) "
-            "VALUES (:u,:m,:a,:v) "
-            "ON CONFLICT (username,mes,ano) DO UPDATE SET valor_planejado=:v"
+            "VALUES (:u,:m,:a,:v) ON CONFLICT (username,mes,ano) DO UPDATE "
+            "SET valor_planejado=:v"
         ), dict(u=u,m=m,a=a,v=v))
 
-# ------------------- Load data -------------------
-gastos_df    = load_table("gastos")
-orcamento_df = load_table("orcamento")
+# ─── Load data ─────────────────────────────────────────────────────
+gastos_df = load_table("gastos")
+orc_df    = load_table("orcamento")
 
-# ------------------- Month/Year selector -------------------
+# ─── Month/Year selector ───────────────────────────────────────────
 meses = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho",
          "Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"]
-mes = st.sidebar.selectbox("Mês", range(1,13),
-                           format_func=lambda x: meses[x-1],
-                           index=date.today().month-1)
+mes = st.sidebar.selectbox("Mês", list(range(1,13)), format_func=lambda x: meses[x-1],
+                            index=date.today().month-1)
 ano = st.sidebar.number_input("Ano", value=date.today().year, step=1, format="%d")
 
-# ------------------- Budget -------------------
-lo = orcamento_df[(orcamento_df.username==user_email)&
-                  (orcamento_df.mes==mes)&(orcamento_df.ano==ano)]
-orc_val = float(lo.valor_planejado.iloc[0]) if not lo.empty else None
-st.sidebar.markdown(f"🎯 **Orçamento:** {brl(orc_val) if orc_val else '—'}")
+# ─── Budget ────────────────────────────────────────────────────────
+row = orc_df[(orc_df.username==user)&(orc_df.mes==mes)&(orc_df.ano==ano)]
+orc_val = float(row.valor_planejado.iloc[0]) if not row.empty else None
+st.sidebar.markdown(f"**Orçamento:** {brl(orc_val) if orc_val else '–'}")
 
-novo_orc = st.sidebar.number_input("Definir/alterar orçamento",
-                                   value=orc_val or 0.0, step=0.01, format="%.2f")
+novo = st.sidebar.number_input("Definir orçamento", value=orc_val or 0.0, step=0.01, format="%.2f")
 if st.sidebar.button("Salvar orçamento"):
-    upsert_orc(user_email, mes, ano, novo_orc)
+    upsert_orc(user, mes, ano, novo)
     st.sidebar.success("Orçamento salvo!")
-    st.cache_data.clear()
-    rerun()
-
+    st.cache_data.clear(); rerun()
 if orc_val is None:
-    st.warning("Defina o orçamento antes de continuar.")
-    st.stop()
-
+    st.warning("Defina o orçamento antes."); st.stop()
 st.sidebar.divider()
 
-# ------------------- New expense form -------------------
+# ─── New expense ───────────────────────────────────────────────────
 st.sidebar.header("Novo gasto")
-first_day, last_day = date(ano, mes, 1), date(ano, mes, monthrange(ano, mes)[1])
-default_d = date.today() if first_day <= date.today() <= last_day else first_day
-dcomp = st.sidebar.date_input("Data", value=default_d,
-                              min_value=first_day, max_value=last_day,
-                              format="DD/MM/YYYY")
+first = date(ano,mes,1); last = date(ano,mes,monthrange(ano,mes)[1])
+default = date.today() if first<=date.today()<=last else first
+d = st.sidebar.date_input("Data", value=default, min_value=first, max_value=last)
 desc = st.sidebar.text_input("Descrição")
-
-categorias = ["Alimentação","Transporte","Lazer","Fixos","Educação",
-              "Presentes","Comprinhas","Outros"]
-cat = st.sidebar.selectbox("Categoria", categorias)
-fonte = st.sidebar.selectbox("Fonte",
-        ["Dinheiro","Crédito","Débito","PIX","Vale Refeição","Vale Alimentação"])
-
+cats = ["Alimentação","Transporte","Lazer","Fixos","Educação","Presentes","Comprinhas","Outros"]
+cat = st.sidebar.selectbox("Categoria", cats)
+fonte = st.sidebar.selectbox("Fonte", ["Dinheiro","Crédito","Débito","PIX","Vale Refeição","Vale Alimentação"])
 parc = st.sidebar.checkbox("Compra parcelada?")
 if parc:
-    nparc = st.sidebar.number_input("Qtd. parcelas", 1, step=1, value=2)
-    modo  = st.sidebar.radio("Informar:", ["Valor total","Valor por parcela"], horizontal=True)
-    if modo == "Valor total":
-        vtot = st.sidebar.number_input("Valor total (R$)", 0.0, step=0.01, format="%.2f")
-        vparc = vtot/nparc if nparc else 0.0
-    else:
-        vparc = st.sidebar.number_input("Valor por parcela (R$)", 0.0, step=0.01, format="%.2f")
-        vtot  = vparc*nparc
-    st.sidebar.markdown(f"Total: {brl(vtot)} → Parcela: {brl(vparc)}")
+    n = st.sidebar.number_input("Qtde parcelas",1,step=1,value=2)
+    modo = st.sidebar.radio("Informar:",["Total","Parcela"],horizontal=True)
+    if modo=="Total": vt = st.sidebar.number_input("Total R$",0.0,step=0.01,format="%.2f"); vp = vt/n
+    else: vp = st.sidebar.number_input("Parcela R$",0.0,step=0.01,format="%.2f"); vt = vp*n
+    st.sidebar.markdown(f"Total: {brl(vt)} → Parcela: {brl(vp)}")
 else:
-    v = st.sidebar.number_input("Valor (R$)", 0.0, step=0.01, format="%.2f")
+    vp = st.sidebar.number_input("Valor R$",0.0,step=0.01,format="%.2f"); vt=vp; n=1
+if st.sidebar.button("Registrar"):
+    for i in range(int(n)):
+        insert_gasto({
+            "username":user,
+            "data":add_months(d,i),
+            "valor":vp,
+            "descricao":f"{desc} ({i+1}/{int(n)})",
+            "categoria":cat,
+            "fonte":fonte
+        })
+    st.sidebar.success("Gasto salvo!"); st.cache_data.clear(); rerun()
 
-if st.sidebar.button("Registrar 💾"):
-    if parc:
-        for i in range(int(nparc)):
-            save_gasto({"username":user_email,
-                        "data":add_months(dcomp,i),
-                        "valor":vparc,
-                        "descricao":f"{desc} (parc.{i+1}/{int(nparc)})",
-                        "categoria":cat,"fonte":fonte})
-    else:
-        save_gasto({"username":user_email,"data":dcomp,"valor":v,
-                    "descricao":desc,"categoria":cat,"fonte":fonte})
-    st.sidebar.success("Gasto salvo!")
-    st.cache_data.clear()
-    rerun()
+# ─── Filter & metrics ─────────────────────────────────────────────
+df = gastos_df[gastos_df.username==user].copy()
+df.data = pd.to_datetime(df.data)
+sel = df[(df.data.dt.month==mes)&(df.data.dt.year==ano)]
+gt = sel.valor.sum(); sd=orc_val-gt
 
-# ------------------- Dashboard summary -------------------
-gastos_df = load_table("gastos")
-df_user   = gastos_df[gastos_df.username==user_email].copy()
-df_user["data"] = pd.to_datetime(df_user.data)
-mes_df = df_user[(df_user.data.dt.month==mes)&(df_user.data.dt.year==ano)]
-
-gasto_total = mes_df.valor.sum()
-saldo = orc_val - gasto_total
-
-a,b,c = st.columns(3)
-a.metric("💸 Gasto", brl(gasto_total))
-b.metric("🎯 Orçamento", brl(orc_val))
-c.metric("📈 Saldo", brl(saldo), delta=brl(saldo), delta_color="normal" if saldo>=0 else "inverse")
+c1,c2,c3 = st.columns(3)
+c1.metric("💸 Gasto", brl(gt))
+c2.metric("🎯 Orçamento", brl(orc_val))
+c3.metric("📈 Saldo", brl(sd), delta=brl(sd), delta_color="normal" if sd>=0 else "inverse")
 
 st.title(f"Gastos de {meses[mes-1]}/{ano}")
+if sel.empty:
+    st.info("Nenhum gasto."); st.stop()
 
-if mes_df.empty:
-    st.info("Nenhum gasto registrado.")
-    st.stop()
+# ─── Charts ───────────────────────────────────────────────────────
+col_cat = sel.groupby("categoria").valor.sum().reset_index()
+col_ft  = sel.groupby("fonte").valor.sum().reset_index()
+col_sd  = pd.DataFrame({"Status":["Gasto","Disponível"],"Valor":[gt,max(sd,0)]})
 
-# ------------------- Charts -------------------
-cor_cat = {"Alimentação":"#1f77b4","Transporte":"#ff7f0e","Lazer":"#2ca02c",
-           "Fixos":"#d62728","Educação":"#9467bd","Presentes":"#17becf",
-           "Comprinhas":"#bcbd22","Outros":"#8c564b"}
-cor_ft  = {"Dinheiro":"#1f77b4","Crédito":"#d62728","Débito":"#2ca02c",
-           "PIX":"#ff7f0e","Vale Refeição":"#9467bd","Vale Alimentação":"#8c564b"}
+pal_cat = {k:v for k,v in zip(cats, alt.scheme.category10)}
+pal_ft  = {"Dinheiro":"#1f77b4","Crédito":"#d62728","Débito":"#2ca02c","PIX":"#ff7f0e","Vale Refeição":"#9467bd","Vale Alimentação":"#8c564b"}
+pal_sd  = {"Gasto":"#e74c3c","Disponível":"#2ecc71"}
 
-def donut(data, field, title, palette, legend_title):
-    present = [k for k in palette if k in data[field].tolist()]
-    return alt.Chart(data).mark_arc(innerRadius=60).encode(
-        theta="valor:Q",
-        color=alt.Color(f"{field}:N", title=legend_title,
-                        scale=alt.Scale(domain=present,
-                                        range=[palette[k] for k in present]),
+def make_donut(df,f,title,pal,leg):
+    pr=[k for k in pal if k in df[f].tolist()]
+    return alt.Chart(df).mark_arc(innerRadius=60).encode(
+        theta="Valor:Q",
+        color=alt.Color(f"{f}:N",title=leg,
+                        scale=alt.Scale(domain=pr,range=[pal[k] for k in pr]),
                         legend=alt.Legend(orient="left"))
     ).properties(title=title)
 
-df_cat = mes_df.groupby("categoria")["valor"].sum().reset_index()
-df_ft  = mes_df.groupby("fonte")["valor"].sum().reset_index()
-df_saldo = pd.DataFrame({"Status":["Gasto","Disponível"],"Valor":[gasto_total, max(saldo,0)]})
+chart1 = make_donut(col_cat,"categoria","Por categoria",pal_cat,"Categoria")
+chart2 = make_donut(col_ft,"fonte","Por fonte",pal_ft,"Fonte")
+chart3 = make_donut(col_sd,"Status","Disponibilidade",pal_sd,"Disponibilidade")
 
-cat_chart   = donut(df_cat, "categoria", "Por categoria", cor_cat, "Categoria")
-fonte_chart = donut(df_ft, "fonte", "Por fonte", cor_ft, "Fonte")
-saldo_chart = donut(df_saldo, "Status", "Disponibilidade", {"Gasto":"#e74c3c","Disponível":"#2ecc71"}, "Disponibilidade")
+d1,d2,d3 = st.columns(3)
+d1.altair_chart(chart1,use_container_width=True)
+d2.altair_chart(chart2,use_container_width=True)
+d3.altair_chart(chart3,use_container_width=True)
 
-g1, g2, g3 = st.columns(3)
-g1.altair_chart(cat_chart, use_container_width=True)
-g2.altair_chart(fonte_chart, use_container_width=True)
-g3.altair_chart(saldo_chart, use_container_width=True)
-
-# ------------------- Detailed list -------------------
+# ─── Detailed list ───────────────────────────────────────────────
 st.subheader("📜 Registros detalhados")
-if "del_id" not in st.session_state:
-    st.session_state.del_id = None
+if "del_id" not in st.session_state: st.session_state.del_id=None
 
-for _, r in mes_df.sort_values("data", ascending=False).iterrows():
-    cols = st.columns([1.5, 3, 2, 1.4, 1.4, 0.6])
-    cols[0].write(r["data"].strftime("%d/%m/%Y"))
-    cols[1].write(r["descricao"])
-    cols[2].write(r["categoria"])
-    cols[3].write(r["fonte"])
-    cols[4].write(brl(r["valor"]))
-    if cols[5].button("🗑️", key=f"del{r['id']}"):
-        st.session_state.del_id = int(r["id"])
-    if st.session_state.del_id == r["id"]:
-        st.warning(f"Apagar **{r['descricao']}** "
-                   f"({r['data'].strftime('%d/%m/%Y')}, {brl(r['valor'])})?")
-        c1, c2 = st.columns(2)
-        if c1.button("✅ Confirmar", key=f"ok{r['id']}"):
-            with eng.begin() as conn:
-                conn.exec_driver_sql("DELETE FROM gastos WHERE id = :id", {"id": r["id"]})
-            st.session_state.del_id = None
-            rerun()
-        if c2.button("❌ Cancelar", key=f"no{r['id']}"):
-            st.session_state.del_id = None
-            rerun()
+for _,r in sel.sort_values("data",ascending=False).iterrows():
+    cols = st.columns([1.2,2.5,2,1.2,1.2,0.6])
+    cols[0].write(r.data.strftime("%d/%m/%Y"))
+    cols[1].write(r.descricao)
+    cols[2].write(r.categoria)
+    cols[3].write(r.fonte)
+    cols[4].write(brl(r.valor))
+    if cols[5].button("🗑️",key=f"del{r.id}")): 
+        st.session_state.del_id=r.id
+    if st.session_state.del_id==r.id:
+        st.warning(f"Apagar {r.descricao} ({r.data.strftime('%d/%m/%Y')}, {brl(r.valor)})?")
+        c_ok, c_no = st.columns(2)
+        if c_ok.button("✅",key=f"ok{r.id}"):
+            with eng.begin() as c:
+                c.exec_driver_sql("DELETE FROM gastos WHERE id=:id",{"id":r.id})
+            st.session_state.del_id=None; rerun()
+        if c_no.button("❌",key=f"no{r.id}"):
+            st.session_state.del_id=None; rerun()
