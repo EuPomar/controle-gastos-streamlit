@@ -31,7 +31,6 @@ CREATE TABLE IF NOT EXISTS orcamento (
   UNIQUE (username, mes, ano)
 );
 """
-
 with eng.begin() as conn:
     for stmt in DDL.split(";"):
         stmt = stmt.strip()
@@ -106,8 +105,7 @@ ano = st.sidebar.number_input("Ano", value=date.today().year, step=1, format="%d
 
 # ------------------- Budget -------------------
 lo = orcamento_df[(orcamento_df.username==user_email)&
-                  (orcamento_df.mes==mes)&
-                  (orcamento_df.ano==ano)]
+                  (orcamento_df.mes==mes)&(orcamento_df.ano==ano)]
 orc_val = float(lo.valor_planejado.iloc[0]) if not lo.empty else None
 st.sidebar.markdown(f"🎯 **Orçamento:** {brl(orc_val) if orc_val else '—'}")
 
@@ -198,27 +196,50 @@ cor_ft  = {"Dinheiro":"#1f77b4","Crédito":"#d62728","Débito":"#2ca02c",
 
 def donut(data, field, title, palette, legend_title):
     present = [k for k in palette if k in data[field].tolist()]
-    chart = alt.Chart(data).mark_arc(innerRadius=60).encode(
+    return alt.Chart(data).mark_arc(innerRadius=60).encode(
         theta="valor:Q",
         color=alt.Color(f"{field}:N", title=legend_title,
                         scale=alt.Scale(domain=present,
                                         range=[palette[k] for k in present]),
                         legend=alt.Legend(orient="left"))
     ).properties(title=title)
-    return chart
 
 df_cat = mes_df.groupby("categoria")["valor"].sum().reset_index()
 df_ft  = mes_df.groupby("fonte")["valor"].sum().reset_index()
-saldo_vals = {"Gasto": gasto_total, "Disponível": max(saldo,0)}
-df_saldo = pd.DataFrame({"Status": list(saldo_vals.keys()),
-                         "Valor": list(saldo_vals.values())})
+df_saldo = pd.DataFrame({"Status":["Gasto","Disponível"],"Valor":[gasto_total, max(saldo,0)]})
 
 cat_chart   = donut(df_cat, "categoria", "Por categoria", cor_cat, "Categoria")
 fonte_chart = donut(df_ft, "fonte", "Por fonte", cor_ft, "Fonte")
-saldo_chart = donut(df_saldo, "Status", "Disponibilidade",
-                    {"Gasto":"#e74c3c","Disponível":"#2ecc71"}, "Disponibilidade")
+saldo_chart = donut(df_saldo, "Status", "Disponibilidade", {"Gasto":"#e74c3c","Disponível":"#2ecc71"}, "Disponibilidade")
 
 g1, g2, g3 = st.columns(3)
 g1.altair_chart(cat_chart, use_container_width=True)
 g2.altair_chart(fonte_chart, use_container_width=True)
 g3.altair_chart(saldo_chart, use_container_width=True)
+
+# ------------------- Detailed list -------------------
+st.subheader("📜 Registros detalhados")
+if "del_id" not in st.session_state:
+    st.session_state.del_id = None
+
+for _, r in mes_df.sort_values("data", ascending=False).iterrows():
+    cols = st.columns([1.5, 3, 2, 1.4, 1.4, 0.6])
+    cols[0].write(r["data"].strftime("%d/%m/%Y"))
+    cols[1].write(r["descricao"])
+    cols[2].write(r["categoria"])
+    cols[3].write(r["fonte"])
+    cols[4].write(brl(r["valor"]))
+    if cols[5].button("🗑️", key=f"del{r['id']}"):
+        st.session_state.del_id = int(r["id"])
+    if st.session_state.del_id == r["id"]:
+        st.warning(f"Apagar **{r['descricao']}** "
+                   f"({r['data'].strftime('%d/%m/%Y')}, {brl(r['valor'])})?")
+        c1, c2 = st.columns(2)
+        if c1.button("✅ Confirmar", key=f"ok{r['id']}"):
+            with eng.begin() as conn:
+                conn.exec_driver_sql("DELETE FROM gastos WHERE id = :id", {"id": r["id"]})
+            st.session_state.del_id = None
+            rerun()
+        if c2.button("❌ Cancelar", key=f"no{r['id']}"):
+            st.session_state.del_id = None
+            rerun()
