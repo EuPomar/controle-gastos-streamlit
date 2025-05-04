@@ -32,7 +32,6 @@ CREATE TABLE IF NOT EXISTS orcamento (
 );
 """
 
-# Execute DDL safely, ignoring existing sequence errors
 with eng.begin() as conn:
     for stmt in DDL.split(";"):
         stmt = stmt.strip()
@@ -43,7 +42,6 @@ with eng.begin() as conn:
         except sqlalchemy.exc.IntegrityError as e:
             msg = str(e).lower()
             if "already exists" in msg or "duplicate key value" in msg:
-                # ignore sequence or relation already exists
                 pass
             else:
                 raise
@@ -107,11 +105,9 @@ mes = st.sidebar.selectbox("Mês", range(1,13),
 ano = st.sidebar.number_input("Ano", value=date.today().year, step=1, format="%d")
 
 # ------------------- Budget -------------------
-lo = orcamento_df[
-    (orcamento_df.username==user_email)&
-    (orcamento_df.mes==mes)&
-    (orcamento_df.ano==ano)
-]
+lo = orcamento_df[(orcamento_df.username==user_email)&
+                  (orcamento_df.mes==mes)&
+                  (orcamento_df.ano==ano)]
 orc_val = float(lo.valor_planejado.iloc[0]) if not lo.empty else None
 st.sidebar.markdown(f"🎯 **Orçamento:** {brl(orc_val) if orc_val else '—'}")
 
@@ -131,8 +127,7 @@ st.sidebar.divider()
 
 # ------------------- New expense form -------------------
 st.sidebar.header("Novo gasto")
-first_day = date(ano, mes, 1)
-last_day  = date(ano, mes, monthrange(ano, mes)[1])
+first_day, last_day = date(ano, mes, 1), date(ano, mes, monthrange(ano, mes)[1])
 default_d = date.today() if first_day <= date.today() <= last_day else first_day
 dcomp = st.sidebar.date_input("Data", value=default_d,
                               min_value=first_day, max_value=last_day,
@@ -174,14 +169,14 @@ if st.sidebar.button("Registrar 💾"):
     st.cache_data.clear()
     rerun()
 
-# ------------------- Dashboard -------------------
+# ------------------- Dashboard summary -------------------
 gastos_df = load_table("gastos")
 df_user   = gastos_df[gastos_df.username==user_email].copy()
 df_user["data"] = pd.to_datetime(df_user.data)
 mes_df = df_user[(df_user.data.dt.month==mes)&(df_user.data.dt.year==ano)]
 
 gasto_total = mes_df.valor.sum()
-saldo       = orc_val - gasto_total
+saldo = orc_val - gasto_total
 
 a,b,c = st.columns(3)
 a.metric("💸 Gasto", brl(gasto_total))
@@ -193,3 +188,37 @@ st.title(f"Gastos de {meses[mes-1]}/{ano}")
 if mes_df.empty:
     st.info("Nenhum gasto registrado.")
     st.stop()
+
+# ------------------- Charts -------------------
+cor_cat = {"Alimentação":"#1f77b4","Transporte":"#ff7f0e","Lazer":"#2ca02c",
+           "Fixos":"#d62728","Educação":"#9467bd","Presentes":"#17becf",
+           "Comprinhas":"#bcbd22","Outros":"#8c564b"}
+cor_ft  = {"Dinheiro":"#1f77b4","Crédito":"#d62728","Débito":"#2ca02c",
+           "PIX":"#ff7f0e","Vale Refeição":"#9467bd","Vale Alimentação":"#8c564b"}
+
+def donut(data, field, title, palette, legend_title):
+    present = [k for k in palette if k in data[field].tolist()]
+    chart = alt.Chart(data).mark_arc(innerRadius=60).encode(
+        theta="valor:Q",
+        color=alt.Color(f"{field}:N", title=legend_title,
+                        scale=alt.Scale(domain=present,
+                                        range=[palette[k] for k in present]),
+                        legend=alt.Legend(orient="left"))
+    ).properties(title=title)
+    return chart
+
+df_cat = mes_df.groupby("categoria")["valor"].sum().reset_index()
+df_ft  = mes_df.groupby("fonte")["valor"].sum().reset_index()
+saldo_vals = {"Gasto": gasto_total, "Disponível": max(saldo,0)}
+df_saldo = pd.DataFrame({"Status": list(saldo_vals.keys()),
+                         "Valor": list(saldo_vals.values())})
+
+cat_chart   = donut(df_cat, "categoria", "Por categoria", cor_cat, "Categoria")
+fonte_chart = donut(df_ft, "fonte", "Por fonte", cor_ft, "Fonte")
+saldo_chart = donut(df_saldo, "Status", "Disponibilidade",
+                    {"Gasto":"#e74c3c","Disponível":"#2ecc71"}, "Disponibilidade")
+
+g1, g2, g3 = st.columns(3)
+g1.altair_chart(cat_chart, use_container_width=True)
+g2.altair_chart(fonte_chart, use_container_width=True)
+g3.altair_chart(saldo_chart, use_container_width=True)
