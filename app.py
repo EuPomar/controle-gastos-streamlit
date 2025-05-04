@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS orcamento (
 with eng.begin() as conn:
     for stmt in DDL.split(";"):
         stmt = stmt.strip()
-        if not stmt: continue
+        if not stmt:
+            continue
         try:
             conn.exec_driver_sql(stmt)
         except sqlalchemy.exc.IntegrityError as e:
@@ -110,7 +111,8 @@ novo = st.sidebar.number_input("Definir orçamento", value=orc_val or 0.0, step=
 if st.sidebar.button("Salvar orçamento"):
     upsert_orc(user, mes, ano, novo)
     st.sidebar.success("Orçamento salvo!")
-    st.cache_data.clear(); rerun()
+    st.cache_data.clear()
+    rerun()
 if orc_val is None:
     st.warning("Defina o orçamento antes."); st.stop()
 st.sidebar.divider()
@@ -128,8 +130,10 @@ parc = st.sidebar.checkbox("Compra parcelada?")
 if parc:
     n = st.sidebar.number_input("Qtde parcelas",1,step=1,value=2)
     modo = st.sidebar.radio("Informar:",["Total","Parcela"],horizontal=True)
-    if modo=="Total": vt = st.sidebar.number_input("Total R$",0.0,step=0.01,format="%.2f"); vp = vt/n
-    else: vp = st.sidebar.number_input("Parcela R$",0.0,step=0.01,format="%.2f"); vt = vp*n
+    if modo=="Total":
+        vt = st.sidebar.number_input("Total R$",0.0,step=0.01,format="%.2f"); vp = vt/n
+    else:
+        vp = st.sidebar.number_input("Parcela R$",0.0,step=0.01,format="%.2f"); vt = vp*n
     st.sidebar.markdown(f"Total: {brl(vt)} → Parcela: {brl(vp)}")
 else:
     vp = st.sidebar.number_input("Valor R$",0.0,step=0.01,format="%.2f"); vt=vp; n=1
@@ -145,11 +149,11 @@ if st.sidebar.button("Registrar"):
         })
     st.sidebar.success("Gasto salvo!"); st.cache_data.clear(); rerun()
 
-# ─── Filter & metrics ─────────────────────────────────────────────
+# ─── Dashboard summary & charts ───────────────────────────────────
 df = gastos_df[gastos_df.username==user].copy()
-df.data = pd.to_datetime(df.data)
+df["data"] = pd.to_datetime(df.data)
 sel = df[(df.data.dt.month==mes)&(df.data.dt.year==ano)]
-gt = sel.valor.sum(); sd=orc_val-gt
+gt = sel.valor.sum(); sd = orc_val - gt
 
 c1,c2,c3 = st.columns(3)
 c1.metric("💸 Gasto", brl(gt))
@@ -160,52 +164,54 @@ st.title(f"Gastos de {meses[mes-1]}/{ano}")
 if sel.empty:
     st.info("Nenhum gasto."); st.stop()
 
-# ─── Charts ───────────────────────────────────────────────────────
 col_cat = sel.groupby("categoria").valor.sum().reset_index()
 col_ft  = sel.groupby("fonte").valor.sum().reset_index()
 col_sd  = pd.DataFrame({"Status":["Gasto","Disponível"],"Valor":[gt,max(sd,0)]})
 
-pal_cat = {k:v for k,v in zip(cats, alt.scheme.category10)}
+pal_cat = {k:"#"+format(i*111111%0xFFFFFF,'06x') for i,k in enumerate(cats)}
 pal_ft  = {"Dinheiro":"#1f77b4","Crédito":"#d62728","Débito":"#2ca02c","PIX":"#ff7f0e","Vale Refeição":"#9467bd","Vale Alimentação":"#8c564b"}
 pal_sd  = {"Gasto":"#e74c3c","Disponível":"#2ecc71"}
 
-def make_donut(df,f,title,pal,leg):
-    pr=[k for k in pal if k in df[f].tolist()]
+def make_donut(df, field, title, pal, leg):
+    pr = [k for k in pal if k in df[field].tolist()]
     return alt.Chart(df).mark_arc(innerRadius=60).encode(
         theta="Valor:Q",
-        color=alt.Color(f"{f}:N",title=leg,
-                        scale=alt.Scale(domain=pr,range=[pal[k] for k in pr]),
+        color=alt.Color(f"{field}:N", title=leg,
+                        scale=alt.Scale(domain=pr, range=[pal[k] for k in pr]),
                         legend=alt.Legend(orient="left"))
     ).properties(title=title)
 
-chart1 = make_donut(col_cat,"categoria","Por categoria",pal_cat,"Categoria")
-chart2 = make_donut(col_ft,"fonte","Por fonte",pal_ft,"Fonte")
-chart3 = make_donut(col_sd,"Status","Disponibilidade",pal_sd,"Disponibilidade")
+ch1 = make_donut(col_cat, "categoria", "Por categoria", pal_cat, "Categoria")
+ch2 = make_donut(col_ft, "fonte", "Por fonte", pal_ft, "Fonte")
+ch3 = make_donut(col_sd, "Status", "Disponibilidade", pal_sd, "Disponibilidade")
 
 d1,d2,d3 = st.columns(3)
-d1.altair_chart(chart1,use_container_width=True)
-d2.altair_chart(chart2,use_container_width=True)
-d3.altair_chart(chart3,use_container_width=True)
+d1.altair_chart(ch1, use_container_width=True)
+d2.altair_chart(ch2, use_container_width=True)
+d3.altair_chart(ch3, use_container_width=True)
 
 # ─── Detailed list ───────────────────────────────────────────────
 st.subheader("📜 Registros detalhados")
-if "del_id" not in st.session_state: st.session_state.del_id=None
+if "del_id" not in st.session_state:
+    st.session_state.del_id = None
 
-for _,r in sel.sort_values("data",ascending=False).iterrows():
+for _, r in sel.sort_values("data", ascending=False).iterrows():
     cols = st.columns([1.2,2.5,2,1.2,1.2,0.6])
     cols[0].write(r.data.strftime("%d/%m/%Y"))
     cols[1].write(r.descricao)
     cols[2].write(r.categoria)
     cols[3].write(r.fonte)
     cols[4].write(brl(r.valor))
-    if cols[5].button("🗑️",key=f"del{r.id}")): 
-        st.session_state.del_id=r.id
-    if st.session_state.del_id==r.id:
+    if cols[5].button("🗑️", key=f"del{r.id}"):
+        st.session_state.del_id = r.id
+    if st.session_state.del_id == r.id:
         st.warning(f"Apagar {r.descricao} ({r.data.strftime('%d/%m/%Y')}, {brl(r.valor)})?")
         c_ok, c_no = st.columns(2)
-        if c_ok.button("✅",key=f"ok{r.id}"):
+        if c_ok.button("✅", key=f"ok{r.id}"):
             with eng.begin() as c:
-                c.exec_driver_sql("DELETE FROM gastos WHERE id=:id",{"id":r.id})
-            st.session_state.del_id=None; rerun()
-        if c_no.button("❌",key=f"no{r.id}"):
-            st.session_state.del_id=None; rerun()
+                c.exec_driver_sql("DELETE FROM gastos WHERE id=:id", {"id": r.id})
+            st.session_state.del_id = None
+            rerun()
+        if c_no.button("❌", key=f"no{r.id}"):
+            st.session_state.del_id = None
+            rerun()
