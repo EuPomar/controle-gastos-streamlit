@@ -4,10 +4,11 @@ from calendar import monthrange
 import pandas as pd
 import altair as alt
 from sqlalchemy import create_engine, text
+import sqlalchemy.exc
 
 # ---------------- Database (Neon PostgreSQL) -------------------
 eng = create_engine(
-    st.secrets["db"]["url"],    # URL do Neon armazenada em Secrets
+    st.secrets["db"]["url"],
     pool_pre_ping=True
 )
 
@@ -30,8 +31,22 @@ CREATE TABLE IF NOT EXISTS orcamento (
   UNIQUE (username, mes, ano)
 );
 """
-with eng.begin() as c:
-    c.exec_driver_sql(DDL)
+
+# Execute DDL safely, ignoring existing sequence errors
+with eng.begin() as conn:
+    for stmt in DDL.split(";"):
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        try:
+            conn.exec_driver_sql(stmt)
+        except sqlalchemy.exc.IntegrityError as e:
+            msg = str(e).lower()
+            if "already exists" in msg or "duplicate key value" in msg:
+                # ignore sequence or relation already exists
+                pass
+            else:
+                raise
 
 # ------------------- Utils -------------------
 def add_months(d, n):
@@ -178,5 +193,3 @@ st.title(f"Gastos de {meses[mes-1]}/{ano}")
 if mes_df.empty:
     st.info("Nenhum gasto registrado.")
     st.stop()
-
-# Final charts & list (cole seu código de gráficos aqui)
