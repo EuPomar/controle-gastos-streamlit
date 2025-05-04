@@ -121,7 +121,7 @@ st.sidebar.divider()
 st.sidebar.header("Novo gasto")
 first = date(ano,mes,1); last = date(ano,mes,monthrange(ano,mes)[1])
 default = date.today() if first<=date.today()<=last else first
-d = st.sidebar.date_input("Data", value=default, min_value=first, max_value=last)
+d = st.sidebar.date_input("Data", value=default, min_value=first, max_value=last, format="DD/MM/YYYY")
 desc = st.sidebar.text_input("Descrição")
 cats = ["Alimentação","Transporte","Lazer","Fixos","Educação","Presentes","Comprinhas","Outros"]
 cat = st.sidebar.selectbox("Categoria", cats)
@@ -164,54 +164,64 @@ st.title(f"Gastos de {meses[mes-1]}/{ano}")
 if sel.empty:
     st.info("Nenhum gasto."); st.stop()
 
-col_cat = sel.groupby("categoria").valor.sum().reset_index()
-col_ft  = sel.groupby("fonte").valor.sum().reset_index()
-col_sd  = pd.DataFrame({"Status":["Gasto","Disponível"],"Valor":[gt,max(sd,0)]})
+# ─── Charts ───────────────────────────────────────────────────────
+# Define explicit color mappings
+cor_cat = {
+    "Alimentação":"#1f77b4","Transporte":"#ff7f0e","Lazer":"#2ca02c",
+    "Fixos":"#d62728","Educação":"#9467bd","Presentes":"#17becf",
+    "Comprinhas":"#bcbd22","Outros":"#8c564b"
+}
+cor_ft = {
+    "Dinheiro":"#1f77b4","Crédito":"#d62728","Débito":"#2ca02c",
+    "PIX":"#ff7f0e","Vale Refeição":"#9467bd","Vale Alimentação":"#8c564b"
+}
+cor_sd = {"Gasto":"#e74c3c","Disponível":"#2ecc71"}
 
-pal_cat = {k:"#"+format(i*111111%0xFFFFFF,'06x') for i,k in enumerate(cats)}
-pal_ft  = {"Dinheiro":"#1f77b4","Crédito":"#d62728","Débito":"#2ca02c","PIX":"#ff7f0e","Vale Refeição":"#9467bd","Vale Alimentação":"#8c564b"}
-pal_sd  = {"Gasto":"#e74c3c","Disponível":"#2ecc71"}
-
-def make_donut(df, field, title, pal, leg):
-    pr = [k for k in pal if k in df[field].tolist()]
-    return alt.Chart(df).mark_arc(innerRadius=60).encode(
-        theta="Valor:Q",
-        color=alt.Color(f"{field}:N", title=leg,
-                        scale=alt.Scale(domain=pr, range=[pal[k] for k in pr]),
+def make_donut(df, field, title, palette, legend_title):
+    df_nonzero = df[df["valor"]>0]
+    present = df_nonzero[field].tolist()
+    chart = alt.Chart(df_nonzero).mark_arc(innerRadius=60).encode(
+        theta="valor:Q",
+        color=alt.Color(f"{field}:N", title=legend_title,
+                        scale=alt.Scale(domain=present,
+                                        range=[palette[k] for k in present]),
                         legend=alt.Legend(orient="left"))
     ).properties(title=title)
+    return chart
 
-ch1 = make_donut(col_cat, "categoria", "Por categoria", pal_cat, "Categoria")
-ch2 = make_donut(col_ft, "fonte", "Por fonte", pal_ft, "Fonte")
-ch3 = make_donut(col_sd, "Status", "Disponibilidade", pal_sd, "Disponibilidade")
+df_cat = sel.groupby("categoria")[ "valor"].sum().reset_index()
+df_ft = sel.groupby("fonte")["valor"].sum().reset_index()
+df_sd = pd.DataFrame({"Status":["Gasto","Disponível"],"valor":[gt,max(sd,0)]})
 
-d1,d2,d3 = st.columns(3)
-d1.altair_chart(ch1, use_container_width=True)
-d2.altair_chart(ch2, use_container_width=True)
-d3.altair_chart(ch3, use_container_width=True)
+chart1 = make_donut(df_cat,"categoria","Por categoria",cor_cat,"Categoria")
+chart2 = make_donut(df_ft,"fonte","Por fonte",cor_ft,"Fonte")
+chart3 = make_donut(df_sd,"Status","Disponibilidade",cor_sd,"Disponibilidade")
+
+col1,col2,col3 = st.columns(3)
+col1.altair_chart(chart1,use_container_width=True)
+col2.altair_chart(chart2,use_container_width=True)
+col3.altair_chart(chart3,use_container_width=True)
 
 # ─── Detailed list ───────────────────────────────────────────────
 st.subheader("📜 Registros detalhados")
 if "del_id" not in st.session_state:
-    st.session_state.del_id = None
+    st.session_state.del_id=None
 
-for _, r in sel.sort_values("data", ascending=False).iterrows():
-    cols = st.columns([1.2,2.5,2,1.2,1.2,0.6])
+for _, r in sel.sort_values("data",ascending=False).iterrows():
+    cols = st.columns([1.2,3,2,1.2,1.2,0.6])
     cols[0].write(r.data.strftime("%d/%m/%Y"))
     cols[1].write(r.descricao)
     cols[2].write(r.categoria)
     cols[3].write(r.fonte)
     cols[4].write(brl(r.valor))
-    if cols[5].button("🗑️", key=f"del{r.id}"):
-        st.session_state.del_id = r.id
-    if st.session_state.del_id == r.id:
+    if cols[5].button("🗑️",key=f"del{r.id}"):
+        st.session_state.del_id=r.id
+    if st.session_state.del_id==r.id:
         st.warning(f"Apagar {r.descricao} ({r.data.strftime('%d/%m/%Y')}, {brl(r.valor)})?")
-        c_ok, c_no = st.columns(2)
-        if c_ok.button("✅", key=f"ok{r.id}"):
+        c_ok,c_no = st.columns(2)
+        if c_ok.button("✅",key=f"ok{r.id}"):
             with eng.begin() as c:
-                c.exec_driver_sql("DELETE FROM gastos WHERE id=:id", {"id": r.id})
-            st.session_state.del_id = None
-            rerun()
-        if c_no.button("❌", key=f"no{r.id}"):
-            st.session_state.del_id = None
-            rerun()
+                c.exec_driver_sql("DELETE FROM gastos WHERE id=:id",{"id":r.id})
+            st.session_state.del_id=None; rerun()
+        if c_no.button("❌",key=f"no{r.id}"):
+            st.session_state.del_id=None; rerun()
