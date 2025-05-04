@@ -62,7 +62,7 @@ if not st.user.is_logged_in:
     st.button("Entrar com Google ➜", on_click=st.login)
     st.stop()
 user = st.user.email
-st.button("Logout", on_click=st.logout)
+st.button("Logout", on_click=st.logout, key="logout")
 
 # Sidebar
 with st.sidebar:
@@ -107,7 +107,7 @@ novo = st.sidebar.number_input("Definir orçamento", value=orc_val or 0.0, step=
 if st.sidebar.button("Salvar orçamento"):
     upsert_orc(user, mes, ano, novo)
     st.sidebar.success("Orçamento salvo!")
-    st.cache_data.clear()
+    load_table.clear()
     rerun()
 if orc_val is None:
     st.warning("Defina o orçamento antes."); st.stop()
@@ -137,7 +137,9 @@ if st.sidebar.button("Registrar"):
     for i in range(int(n)):
         insert_gasto({"username":user, "data":add_months(d,i), "valor":vp,
                       "descricao":f"{desc} ({i+1}/{int(n)})", "categoria":cat, "fonte":fonte})
-    st.sidebar.success("Gasto salvo!"); st.cache_data.clear(); rerun()
+    st.sidebar.success("Gasto salvo!")
+    load_table.clear()
+    rerun()
 
 # Dashboard summary & charts
 df = gastos_df[gastos_df.username==user].copy()
@@ -160,9 +162,9 @@ cor_ft = {"Dinheiro":"#1f77b4","Crédito":"#d62728","Débito":"#2ca02c",
 cor_sd = {"Gasto":"#e74c3c","Disponível":"#2ecc71"}
 
 def make_donut(df, field, title, palette, legend_title):
-    df = df[df["valor"]>0]
-    present = df[field].tolist()
-    return alt.Chart(df).mark_arc(innerRadius=60).encode(
+    df_f = df[df["valor"]>0]
+    present = df_f[field].tolist()
+    return alt.Chart(df_f).mark_arc(innerRadius=60).encode(
         theta="valor:Q",
         color=alt.Color(f"{field}:N", title=legend_title,
                         scale=alt.Scale(domain=present, range=[palette[k] for k in present]),
@@ -200,9 +202,9 @@ for _, r in sel.sort_values("data", ascending=False).iterrows():
         st.warning(f"Apagar {r.descricao} ({r.data.strftime('%d/%m/%Y')}, {brl(r.valor)})?")
         ok, no = st.columns(2)
         if ok.button("✅", key=f"ok{r.id}"):
-            # Proper deletion using text()
             with eng.begin() as conn:
                 conn.execute(text("DELETE FROM gastos WHERE id = :id"), {"id": r.id})
+            load_table.clear()
             st.session_state.del_id = None
             rerun()
         if no.button("❌", key=f"no{r.id}"):
